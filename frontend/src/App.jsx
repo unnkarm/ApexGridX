@@ -29,7 +29,7 @@ const T = {
 /* ═══════════════════════════════════════════════════════════════════════════
    DATA LAYER  — mirrors Ergast + FastF1 API shapes
 ═══════════════════════════════════════════════════════════════════════════ */
-const DRIVERS = [
+const DRIVER_SEED = [
   { pos:1,  code:"VER", name:"Max Verstappen",   team:"Red Bull",   pts:77,  wins:2, podiums:3,  champs:4, nat:"🇳🇱", color:"#3671C6", style:"Aggressive late braking",  pace:98, racecraft:96, consistency:95, starts:200 },
   { pos:2,  code:"NOR", name:"Lando Norris",      team:"McLaren",    pts:62,  wins:1, podiums:3,  champs:0, nat:"🇬🇧", color:"#FF8000", style:"High-speed apex precision", pace:95, racecraft:93, consistency:91, starts:125 },
   { pos:3,  code:"LEC", name:"Charles Leclerc",   team:"Ferrari",    pts:56,  wins:1, podiums:2,  champs:0, nat:"🇲🇨", color:"#E8002D", style:"Ultra-late braking",        pace:96, racecraft:91, consistency:89, starts:142 },
@@ -42,7 +42,15 @@ const DRIVERS = [
   { pos:10, code:"TSU", name:"Yuki Tsunoda",      team:"Red Bull",   pts:10,  wins:0, podiums:0,  champs:0, nat:"🇯🇵", color:"#3671C6", style:"High risk / reward",         pace:87, racecraft:86, consistency:84, starts:98  },
 ];
 
-const CONSTRUCTORS = [
+const PRIMARY_NAV = [
+  { id: "home", label: "Home" },
+  { id: "dashboard", label: "Telemetry" },
+  { id: "learn", label: "Learn" },
+  { id: "community", label: "Community" },
+  { id: "ai", label: "GridBot" },
+];
+
+const CONSTRUCTOR_SEED = [
   { pos:1, name:"McLaren",       pts:111, color:"#FF8000", drivers:["NOR","PIA"], change:+1 },
   { pos:2, name:"Red Bull",      pts:87,  color:"#3671C6", drivers:["VER","TSU"], change:-1 },
   { pos:3, name:"Ferrari",       pts:86,  color:"#E8002D", drivers:["LEC","HAM"], change:0  },
@@ -58,6 +66,111 @@ const PTS_DATA = [
   { race:"CHN", VER:37, NOR:43, LEC:27, PIA:27, RUS:22, HAM:14 },
   { race:"JPN", VER:49, NOR:55, LEC:43, PIA:38, RUS:29, HAM:21 },
 ];
+
+const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:8000").replace(/\/+$/, "");
+
+const TEAM_COLORS = {
+  "Red Bull": "#3671C6",
+  "Oracle Red Bull Racing": "#3671C6",
+  "McLaren": "#FF8000",
+  "Ferrari": "#E8002D",
+  "Mercedes": "#27F4D2",
+  "Williams": "#37BEDD",
+  "Aston Martin": "#358C75",
+  "Alpine": "#FF87BC",
+  "Haas F1 Team": "#B6BABD",
+  "Haas": "#B6BABD",
+  "RB F1 Team": "#5E8BFF",
+  "Kick Sauber": "#00E676",
+};
+
+const LIVE = {
+  drivers: DRIVER_SEED,
+  constructors: CONSTRUCTOR_SEED,
+  nextRace: null,
+};
+
+function _safeInt(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function _msUntil(startAtMs) {
+  if (!startAtMs) return 0;
+  return Math.max(0, startAtMs - Date.now());
+}
+
+function _countdownParts(startAtMs) {
+  const ms = _msUntil(startAtMs);
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return { d, h, m, s: sec };
+}
+
+function _deriveNextRaceFromOverview(overview) {
+  const r = overview?.nextRace;
+  if (!r) return null;
+  const date = r.date;
+  const time = r.time || "00:00:00Z";
+  const startAt = Date.parse(`${date}T${time}`);
+  const name = (r.raceName || "").trim() || "Next Race";
+  const circuit = r?.Circuit?.circuitName || "";
+  const country = r?.Circuit?.Location?.country || "";
+  const round = _safeInt(r.round, 0);
+  return { name, circuit, country, date, time, round, startAt };
+}
+
+function _mergeDriversWithSeed(liveStandings) {
+  const byCode = new Map(DRIVER_SEED.map((d) => [d.code, d]));
+  return (liveStandings || [])
+    .map((s) => {
+      const code = s?.Driver?.code || s?.Driver?.driverId || "";
+      const seed = byCode.get(code);
+      const constructor = (s?.Constructors && s.Constructors[0]) || {};
+      const team = constructor?.name || seed?.team || "Unknown";
+      const color = TEAM_COLORS[team] || seed?.color || T.red;
+      const name = `${s?.Driver?.givenName || ""} ${s?.Driver?.familyName || ""}`.trim() || seed?.name || code;
+      const pos = _safeInt(s?.position, seed?.pos || 0);
+      const pts = _safeInt(s?.points, seed?.pts || 0);
+      const wins = _safeInt(s?.wins, seed?.wins || 0);
+      return {
+        ...(seed || {}),
+        pos,
+        pts,
+        wins,
+        code: seed?.code || code,
+        name,
+        team,
+        color,
+      };
+    })
+    .filter((d) => d.code)
+    .sort((a, b) => a.pos - b.pos);
+}
+
+function _mergeConstructorsWithSeed(liveStandings) {
+  const byName = new Map(CONSTRUCTOR_SEED.map((c) => [c.name, c]));
+  return (liveStandings || [])
+    .map((s) => {
+      const name = s?.Constructor?.name || "";
+      const seed = byName.get(name);
+      const pts = _safeInt(s?.points, seed?.pts || 0);
+      const pos = _safeInt(s?.position, seed?.pos || 0);
+      const color = TEAM_COLORS[name] || seed?.color || T.red;
+      return { ...(seed || {}), pos, pts, name, color };
+    })
+    .filter((c) => c.name)
+    .sort((a, b) => a.pos - b.pos);
+}
+
+async function fetchOverview() {
+  const resp = await fetch(`${API_BASE}/api/f1/overview`);
+  if (!resp.ok) throw new Error(`overview_http_${resp.status}`);
+  return resp.json();
+}
 
 const TYRE_STRATEGIES = {
   "Australian GP": [
@@ -352,7 +465,7 @@ function LiveLeaderboard({ onSelect, selected }) {
    TELEMETRY PANEL — from DriverInfoComponent (speed/gear/DRS/throttle)
 ═══════════════════════════════════════════════════════════════════════════ */
 function TelemetryPanel({ driverCode }) {
-  const d = DRIVERS.find(x=>x.code===driverCode)||DRIVERS[0];
+  const d = LIVE.drivers.find(x=>x.code===driverCode) || LIVE.drivers[0];
   const telData = Array.from({length:60},(_,i)=>({
     dist:i*100,
     speed:120+200*Math.abs(Math.sin(i*0.3+1))+Math.random()*20,
@@ -419,19 +532,15 @@ function AIChat() {
     setMessages(newMessages);
     setLoading(true);
     try {
-      const system = `You are GridBot — an elite F1 analyst embedded in ApexGrid. 2026 season: VER 77pts, NOR 62pts, LEC 56pts. McLaren leads constructors 111pts. Hamilton moved to Ferrari. Races done: AUS (VER), CHN (NOR), JPN (LEC). Next: Bahrain GP Apr 13. Max 100 words. 1-2 emojis. Be specific and insightful.`;
-      const resp = await fetch("https://api.anthropic.com/v1/messages",{
+      const resp = await fetch(`${API_BASE}/api/ai/chat`,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514",
-          max_tokens:1000,
-          system,
           messages:newMessages.map(m=>({role:m.role,content:m.content}))
         })
       });
       const data = await resp.json();
-      const reply = data.content?.map(b=>b.text||"").join("")||"Signal lost — try again.";
+      const reply = data.reply || "Signal lost - try again.";
       setMessages(prev=>[...prev,{role:"assistant",content:reply}]);
     } catch {
       setMessages(prev=>[...prev,{role:"assistant",content:"Network timeout. Please retry."}]);
@@ -482,24 +591,228 @@ function AIChat() {
   );
 }
 
+function useApiRooms() {
+  const [rooms, setRooms] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await fetch(`${API_BASE}/api/rooms`);
+      if (!resp.ok) throw new Error(`rooms_http_${resp.status}`);
+      const data = await resp.json();
+      setRooms(data.rooms || []);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  return { rooms, loading, error, refresh };
+}
+
+function wsBaseFromHttp(httpBase) {
+  if (!httpBase) return "";
+  if (httpBase.startsWith("https://")) return "wss://" + httpBase.slice("https://".length);
+  if (httpBase.startsWith("http://")) return "ws://" + httpBase.slice("http://".length);
+  return httpBase;
+}
+
+function RaceRooms() {
+  const { rooms, loading, refresh } = useApiRooms();
+  const [roomId, setRoomId] = useState("paddock");
+  const [user, setUser] = useState(() => `GridFan${Math.floor(100 + Math.random() * 900)}`);
+  const [messages, setMessages] = useState([]);
+  const [online, setOnline] = useState(0);
+  const [input, setInput] = useState("");
+  const wsRef = useRef(null);
+  const endRef = useRef(null);
+
+  useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth"}); },[messages]);
+
+  useEffect(() => {
+    const base = wsBaseFromHttp(API_BASE);
+    if (!base) return;
+    const wsUrl = `${base}/ws/rooms/${encodeURIComponent(roomId)}?user=${encodeURIComponent(user)}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        if (data.type === "init") {
+          setMessages(data.history || []);
+          setOnline(data.online || 0);
+          return;
+        }
+        if (data.type === "system") {
+          setMessages((prev) => [...prev, data]);
+          return;
+        }
+        if (data.type === "message") {
+          setMessages((prev) => [...prev, data]);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+    };
+    ws.onclose = () => {
+      wsRef.current = null;
+    };
+
+    return () => {
+      try { ws.close(); } catch {}
+      wsRef.current = null;
+    };
+  }, [roomId, user]);
+
+  const send = () => {
+    const text = input.trim();
+    if (!text) return;
+    setInput("");
+    try {
+      wsRef.current?.send(JSON.stringify({ type: "message", text }));
+    } catch {}
+  };
+
+  const selected = rooms.find(r => r.id === roomId) || { id: roomId, name: roomId, topic: "" };
+
+  return (
+    <div style={{ display:"grid", gridTemplateColumns:"320px 1fr", gap:16, alignItems:"stretch" }}>
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        <div style={{ padding:"14px 16px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ fontWeight:800, color:T.text }}>Race Rooms</div>
+          <button onClick={refresh} style={{ background:"none", border:`1px solid ${T.border}`, color:T.muted, borderRadius:10, padding:"6px 10px", cursor:"pointer", fontSize:12 }}>
+            Refresh
+          </button>
+        </div>
+        <div style={{ padding:12, borderBottom:`1px solid ${T.border}` }}>
+          <div style={{ fontSize:10, color:T.muted, letterSpacing:2, textTransform:"uppercase", marginBottom:6 }}>Username</div>
+          <input value={user} onChange={e=>setUser(e.target.value)} style={{ width:"100%", background:T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", color:T.text, outline:"none" }} />
+        </div>
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {loading ? (
+            <div style={{ padding:16, color:T.muted }}>Loading rooms…</div>
+          ) : (
+            (rooms.length?rooms:[{id:"paddock",name:"Paddock",topic:"General F1 chat",online:0}]).map(r => (
+              <button key={r.id} onClick={()=>setRoomId(r.id)}
+                style={{ width:"100%", textAlign:"left", background:roomId===r.id?T.surface:"transparent", border:"none", borderLeft:`3px solid ${roomId===r.id?T.red:"transparent"}`, padding:"12px 14px", cursor:"pointer", color:T.text }}>
+                <div style={{ display:"flex", justifyContent:"space-between", gap:8, alignItems:"center" }}>
+                  <div style={{ fontWeight:700, fontSize:13 }}>{r.name}</div>
+                  <div style={{ fontSize:11, color:T.muted }}>{r.online ?? 0} online</div>
+                </div>
+                <div style={{ fontSize:11, color:T.muted, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.topic}</div>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        <div style={{ padding:"14px 16px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:900, textTransform:"uppercase", color:T.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{selected.name}</div>
+            <div style={{ fontSize:11, color:T.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{selected.topic}</div>
+          </div>
+          <div style={{ background:T.redDim, border:`1px solid ${T.red}44`, borderRadius:999, padding:"5px 10px", fontSize:11, color:T.red, fontWeight:800 }}>
+            {online || 0} online
+          </div>
+        </div>
+
+        <div style={{ flex:1, overflowY:"auto", padding:14, display:"flex", flexDirection:"column", gap:10 }}>
+          {messages.map((m, idx) => (
+            <div key={idx} style={{ display:"flex", justifyContent:m.type==="message" && m.user===user ? "flex-end" : "flex-start" }}>
+              <div style={{ maxWidth:"86%", background:m.type==="message" && m.user===user ? T.red : T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", color:T.text }}>
+                {m.type==="system" ? (
+                  <div style={{ fontSize:12, color:T.muted }}>{m.text}</div>
+                ) : (
+                  <>
+                    <div style={{ display:"flex", justifyContent:"space-between", gap:10, marginBottom:4 }}>
+                      <div style={{ fontSize:11, fontWeight:800, color:m.user===user?"#fff":T.red, letterSpacing:1, textTransform:"uppercase" }}>{m.user}</div>
+                      <div style={{ fontSize:10, color:T.muted, fontFamily:"'DM Mono',monospace" }}>{(m.ts||"").replace("T"," ").replace("Z","")}</div>
+                    </div>
+                    <div style={{ fontSize:13, lineHeight:1.6 }}>{m.text}</div>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+          <div ref={endRef} />
+        </div>
+
+        <div style={{ padding:12, borderTop:`1px solid ${T.border}`, display:"flex", gap:10 }}>
+          <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()}
+            placeholder="Message…"
+            style={{ flex:1, background:T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", color:T.text, outline:"none" }} />
+          <button onClick={send} style={{ background:T.red, border:"none", borderRadius:12, padding:"10px 18px", color:"#fff", fontWeight:800, cursor:"pointer" }}>
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NextRacePrediction() {
+  const [loading, setLoading] = useState(false);
+  const [text, setText] = useState("");
+
+  const run = async () => {
+    setLoading(true);
+    setText("");
+    try {
+      const resp = await fetch(`${API_BASE}/api/ai/predict/next`);
+      const data = await resp.json();
+      setText(data.prediction || "");
+    } catch {
+      setText("Prediction service unavailable. Try again.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:"hidden" }}>
+      <div style={{ padding:"14px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ fontWeight:800, color:T.text }}>AI Prediction</div>
+        <button onClick={run} disabled={loading} style={{ background:T.red, border:"none", borderRadius:10, padding:"7px 12px", color:"#fff", fontWeight:800, cursor:"pointer", opacity:loading?0.6:1 }}>
+          {loading ? "Thinking…" : "Predict next race"}
+        </button>
+      </div>
+      <div style={{ padding:14, color:T.muted, fontSize:13, lineHeight:1.65, minHeight:90 }}>
+        {text ? text : "Get a quick winner + dark horse + strategy factor for the next race."}
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    HERO SECTION
 ═══════════════════════════════════════════════════════════════════════════ */
 function Hero({ onCTA }) {
-  const [countdown, setCountdown] = useState({d:NEXT_RACE.days,h:NEXT_RACE.hours,m:NEXT_RACE.mins,s:0});
+  const race = LIVE.nextRace || {
+    name: NEXT_RACE.name,
+    country: NEXT_RACE.country,
+    round: NEXT_RACE.round,
+    startAt: Date.parse(NEXT_RACE.date),
+  };
+  const [countdown, setCountdown] = useState(
+    race?.startAt ? _countdownParts(race.startAt) : { d: NEXT_RACE.days, h: NEXT_RACE.hours, m: NEXT_RACE.mins, s: 0 }
+  );
   const canvasRef = useRef(null);
   const particlesRef = useRef([]);
 
   useEffect(()=>{
-    const timer = setInterval(()=>{
-      setCountdown(prev=>{
-        let {d,h,m,s} = prev; s--;
-        if(s<0){s=59;m--;} if(m<0){m=59;h--;} if(h<0){h=23;d--;}
-        return {d:Math.max(0,d),h:Math.max(0,h),m:Math.max(0,m),s:Math.max(0,s)};
-      });
-    },1000);
+    const timer = setInterval(()=>setCountdown(_countdownParts(race?.startAt)), 1000);
     return ()=>clearInterval(timer);
-  },[]);
+  },[race?.startAt]);
 
   useEffect(()=>{
     const canvas = canvasRef.current;
@@ -541,7 +854,7 @@ function Hero({ onCTA }) {
       <div style={{ marginBottom:32, background:T.redDim, border:`1px solid ${T.red}44`, borderRadius:100, padding:"10px 24px", display:"flex", alignItems:"center", gap:10, animation:"fadeDown 0.6s ease forwards" }}>
         <div style={{ width:8, height:8, borderRadius:"50%", background:T.red, animation:"pulse 1.5s infinite" }}/>
         <span style={{ fontSize:12, fontWeight:700, letterSpacing:2, textTransform:"uppercase", color:T.text }}>
-          {NEXT_RACE.country} {NEXT_RACE.name} — {pad(countdown.d)}d {pad(countdown.h)}h {pad(countdown.m)}m {pad(countdown.s)}s
+          {(race?.country || NEXT_RACE.country)} {(race?.name || NEXT_RACE.name)} - {pad(countdown.d)}d {pad(countdown.h)}h {pad(countdown.m)}m {pad(countdown.s)}s
         </span>
       </div>
       <h1 style={{ fontFamily:"'Barlow Condensed','Impact',sans-serif", fontSize:"clamp(56px,10vw,120px)", fontWeight:900, textTransform:"uppercase", textAlign:"center", lineHeight:0.9, marginBottom:24, animation:"fadeUp 0.8s 0.1s ease both", letterSpacing:"-1px" }}>
@@ -560,13 +873,13 @@ function Hero({ onCTA }) {
         ))}
       </div>
       <div style={{ display:"flex", gap:14, flexWrap:"wrap", justifyContent:"center", animation:"fadeUp 0.8s 0.4s ease both" }}>
-        <button onClick={()=>onCTA("dashboard")}
+        <button onClick={()=>onCTA("ai")}
           style={{ background:T.red, border:"none", color:"#fff", borderRadius:12, padding:"14px 32px", fontSize:15, fontWeight:700, cursor:"pointer", boxShadow:`0 0 30px ${T.redGlow},0 4px 20px rgba(0,0,0,0.4)`, transition:"all 0.3s" }}
           onMouseEnter={e=>{e.target.style.transform="translateY(-2px)";e.target.style.boxShadow=`0 0 50px ${T.red}55,0 8px 30px rgba(0,0,0,0.5)`;}}
           onMouseLeave={e=>{e.target.style.transform="none";e.target.style.boxShadow=`0 0 30px ${T.redGlow},0 4px 20px rgba(0,0,0,0.4)`;}}>
           🏎️ Explore Dashboard
         </button>
-        <button onClick={()=>onCTA("ai")}
+        <button onClick={()=>onCTA("learn")}
           style={{ background:"transparent", border:`1.5px solid ${T.borderBright}`, color:T.text, borderRadius:12, padding:"14px 32px", fontSize:15, fontWeight:600, cursor:"pointer", transition:"all 0.3s" }}
           onMouseEnter={e=>{e.target.style.borderColor=T.red;e.target.style.background=T.redDim;}}
           onMouseLeave={e=>{e.target.style.borderColor=T.borderBright;e.target.style.background="transparent";}}>
@@ -583,16 +896,31 @@ function Hero({ onCTA }) {
 ═══════════════════════════════════════════════════════════════════════════ */
 function CommunitySection() {
   const [activeTeam, setActiveTeam] = useState(null);
+  const [tab, setTab] = useState("feed");
   return (
     <div style={{ padding:"80px 20px", maxWidth:1200, margin:"0 auto" }}>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 360px", gap:32, alignItems:"start" }}>
         <div>
           <div style={{ marginBottom:28 }}>
             <div style={{ fontSize:11, color:T.red, fontWeight:800, letterSpacing:3, textTransform:"uppercase", marginBottom:10 }}>Community</div>
-            <h2 style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:"clamp(32px,5vw,52px)", fontWeight:900, textTransform:"uppercase", color:T.text }}>The Grid Talks</h2>
+            <h2 style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:"clamp(32px,5vw,52px)", fontWeight:900, textTransform:"uppercase", color:T.text }}>Race HQ</h2>
+            <div style={{ marginTop:14, display:"flex", gap:10, flexWrap:"wrap" }}>
+              {[
+                { id:"feed", label:"Feed" },
+                { id:"rooms", label:"Race Rooms" },
+                { id:"teams", label:"Teams" },
+                { id:"pred", label:"Predictions" },
+              ].map(t => (
+                <button key={t.id} onClick={()=>setTab(t.id)}
+                  style={{ background:tab===t.id?T.surface:"transparent", border:`1px solid ${tab===t.id?T.red:T.border}`, color:tab===t.id?T.text:T.muted, borderRadius:999, padding:"7px 12px", fontSize:12, cursor:"pointer", fontWeight:tab===t.id?800:600 }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {COMMUNITY_POSTS.map((p,i)=>(
+          {tab==="feed" && (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {COMMUNITY_POSTS.map((p,i)=>(
               <div key={p.id} style={{ background:T.card, border:`1px solid ${p.hot?T.red+"33":T.border}`, borderRadius:12, padding:"16px 20px", transition:"all 0.2s", cursor:"pointer" }}
                 onMouseEnter={e=>{e.currentTarget.style.background=T.cardHover;e.currentTarget.style.borderColor=T.borderBright;}}
                 onMouseLeave={e=>{e.currentTarget.style.background=T.card;e.currentTarget.style.borderColor=p.hot?T.red+"33":T.border;}}>
@@ -613,8 +941,30 @@ function CommunitySection() {
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
+
+          {tab==="rooms" && <RaceRooms />}
+
+          {tab==="teams" && (
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:"hidden" }}>
+              <div style={{ padding:"14px 18px", borderBottom:`1px solid ${T.border}`, fontWeight:800, fontSize:14, color:T.text }}>? Team Communities</div>
+              {TEAM_COMMUNITIES.map(tc=>(
+                <div key={tc.name} onClick={()=>setActiveTeam(tc.name===activeTeam?null:tc.name)}
+                  style={{ display:"flex", alignItems:"center", gap:12, padding:"11px 18px", borderBottom:`1px solid ${T.border}`, cursor:"pointer", background:activeTeam===tc.name?`${tc.color}11`:"transparent", transition:"background 0.2s", borderLeft:activeTeam===tc.name?`3px solid ${tc.color}`:"3px solid transparent" }}>
+                  <span style={{ fontSize:18 }}>{tc.emoji}</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{tc.name}</div>
+                    <div style={{ fontSize:11, color:T.muted }}>{tc.members} members · {tc.posts} posts</div>
+                  </div>
+                  <span style={{ fontSize:12, color:T.muted }}>Join →</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab==="pred" && <NextRacePrediction />}
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
           <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, overflow:"hidden" }}>
@@ -657,6 +1007,7 @@ function Dashboard() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [selectedDriver, setSelectedDriver] = useState("VER");
+  const [compareDriver, setCompareDriver] = useState("NOR");
   const [activeTab, setActiveTab] = useState("replay");
   const playRef = useRef(null);
 
@@ -724,7 +1075,7 @@ function Dashboard() {
               <p style={{ fontSize:12, color:T.muted, marginBottom:20 }}>Bayesian state-space degradation model — compound choices and deg rates</p>
               <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
                 {TYRE_STRATEGIES["Australian GP"].map(d=>{
-                  const dr = DRIVERS.find(x=>x.code===d.driver);
+                  const dr = LIVE.drivers.find(x=>x.code===d.driver);
                   return (
                     <div key={d.driver} style={{ display:"grid", gridTemplateColumns:"100px 1fr", gap:14, alignItems:"center" }}>
                       <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -749,7 +1100,7 @@ function Dashboard() {
                       <YAxis tick={{fill:T.muted,fontSize:11}} axisLine={false} tickLine={false}/>
                       <Tooltip contentStyle={{background:T.card,border:`1px solid ${T.border}`,borderRadius:8,color:T.text,fontSize:12}}/>
                       {["VER","NOR","LEC","PIA","RUS"].map(code=>{
-                        const d = DRIVERS.find(x=>x.code===code);
+                        const d = LIVE.drivers.find(x=>x.code===code);
                         return <Line key={code} type="monotone" dataKey={code} stroke={d?.color} strokeWidth={2.5} dot={{r:4,fill:d?.color}} name={code}/>;
                       })}
                     </LineChart>
@@ -769,23 +1120,53 @@ function Dashboard() {
 
           {activeTab==="telemetry"&&(
             <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                {DRIVERS.slice(0,6).map(d=>(
-                  <button key={d.code} onClick={()=>setSelectedDriver(d.code)}
-                    style={{ background:selectedDriver===d.code?d.color:T.surface, border:`1px solid ${selectedDriver===d.code?d.color:T.border}`, borderRadius:8, padding:"6px 14px", color:selectedDriver===d.code?"#fff":T.muted, fontSize:13, fontWeight:700, cursor:"pointer", transition:"all 0.2s" }}>
-                    {d.code}
-                  </button>
-                ))}
+              <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:16 }}>
+                <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:26, fontWeight:900, textTransform:"uppercase", color:T.text, marginBottom:12 }}>Driver Telemetry</div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 60px", gap:12, alignItems:"center" }}>
+                  <div>
+                    <div style={{ fontSize:11, color:T.muted, marginBottom:6 }}>Driver 1</div>
+                    <select value={selectedDriver} onChange={e=>setSelectedDriver(e.target.value)}
+                      style={{ width:"100%", background:T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", color:T.text, fontWeight:700, outline:"none" }}>
+                      {LIVE.drivers.map(d=><option key={d.code} value={d.code}>{d.code} — {d.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:11, color:T.muted, marginBottom:6 }}>Driver 2</div>
+                    <select value={compareDriver} onChange={e=>setCompareDriver(e.target.value)}
+                      style={{ width:"100%", background:T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", color:T.text, fontWeight:700, outline:"none" }}>
+                      {LIVE.drivers.map(d=><option key={d.code} value={d.code}>{d.code} — {d.name}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:28, fontWeight:900, textAlign:"center", color:T.muted }}>VS</div>
+                </div>
+                <div style={{ marginTop:12, display:"flex", gap:10, flexWrap:"wrap" }}>
+                  {[selectedDriver, compareDriver].filter((v,i,a)=>a.indexOf(v)===i).map(code=>{
+                    const d = LIVE.drivers.find(x=>x.code===code);
+                    return (
+                      <div key={code} style={{ display:"flex", alignItems:"center", gap:10, background:T.surface, border:`1px solid ${d?.color||T.border}`, borderRadius:999, padding:"7px 12px" }}>
+                        <div style={{ width:8, height:8, borderRadius:"50%", background:d?.color||T.muted }}/>
+                        <div style={{ fontFamily:"'DM Mono',monospace", fontSize:12, color:T.text, fontWeight:700 }}>{code}</div>
+                        <div style={{ fontSize:11, color:T.muted }}>{d?.team}</div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-              <TelemetryPanel driverCode={selectedDriver}/>
+
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+                <TelemetryPanel driverCode={selectedDriver}/>
+                <TelemetryPanel driverCode={compareDriver}/>
+              </div>
               {(()=>{
-                const d = DRIVERS.find(x=>x.code===selectedDriver);
-                if(!d) return null;
-                const radarData = [
-                  {attr:"Pace",value:d.pace},{attr:"Racecraft",value:d.racecraft},
-                  {attr:"Consistency",value:d.consistency},{attr:"Experience",value:Math.min(100,d.starts/4)},
-                  {attr:"Championships",value:d.champs*14+20},
-                ];
+                const d1 = LIVE.drivers.find(x=>x.code===selectedDriver);
+                const d2 = LIVE.drivers.find(x=>x.code===compareDriver);
+                if(!d1 || !d2) return null;
+                const radarData = ["Pace","Racecraft","Consistency","Experience","Championships"].map(attr => ({
+                  attr,
+                  d1: attr==="Experience" ? Math.min(100, d1.starts/4) : attr==="Championships" ? d1.champs*14+20 : d1[attr.toLowerCase()],
+                  d2: attr==="Experience" ? Math.min(100, d2.starts/4) : attr==="Championships" ? d2.champs*14+20 : d2[attr.toLowerCase()],
+                }));
+                const d = d1;
                 return (
                   <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:20 }}>
                     <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:800, textTransform:"uppercase", color:T.text, marginBottom:16 }}>{d.name} · Driver Profile</div>
@@ -795,15 +1176,25 @@ function Dashboard() {
                           <RadarChart data={radarData}>
                             <PolarGrid stroke={T.border}/>
                             <PolarAngleAxis dataKey="attr" tick={{fill:T.muted,fontSize:11}}/>
-                            <Radar dataKey="value" stroke={d.color} fill={d.color} fillOpacity={0.25} strokeWidth={2}/>
+                            <Radar dataKey="d1" stroke={d1.color} fill={d1.color} fillOpacity={0.18} strokeWidth={2}/>
+                            <Radar dataKey="d2" stroke={d2.color} fill={d2.color} fillOpacity={0.12} strokeWidth={2}/>
                           </RadarChart>
                         </ResponsiveContainer>
                       </div>
-                      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                        {[["Nationality",d.nat],["Team",d.team],["Championships",d.champs],["Race Wins",d.wins],["Podiums",d.podiums],["Driving Style",d.style]].map(([k,v])=>(
-                          <div key={k} style={{ display:"flex", justifyContent:"space-between", gap:8, paddingBottom:8, borderBottom:`1px solid ${T.border}` }}>
-                            <span style={{ fontSize:12, color:T.muted }}>{k}</span>
-                            <span style={{ fontSize:12, fontWeight:600, color:T.text, textAlign:"right" }}>{v}</span>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                        {[d1,d2].map(dx=>(
+                          <div key={dx.code} style={{ background:T.surface, border:`1px solid ${dx.color}33`, borderRadius:12, padding:12 }}>
+                            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+                              <div style={{ width:4, height:18, background:dx.color, borderRadius:2 }}/>
+                              <div style={{ fontWeight:900, color:T.text }}>{dx.code}</div>
+                              <div style={{ fontSize:12, color:T.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{dx.team}</div>
+                            </div>
+                            {[["Pos",`P${dx.pos}`],["Points",dx.pts],["Wins",dx.wins],["Podiums",dx.podiums]].map(([k,v])=>(
+                              <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:`1px solid ${T.border}` }}>
+                                <span style={{ fontSize:11, color:T.muted }}>{k}</span>
+                                <span style={{ fontFamily:"'DM Mono',monospace", fontSize:12, color:T.text, fontWeight:700 }}>{v}</span>
+                              </div>
+                            ))}
                           </div>
                         ))}
                       </div>
@@ -831,7 +1222,7 @@ function Dashboard() {
           <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:16 }}>
             <div style={{ fontSize:11, color:T.muted, letterSpacing:2, fontWeight:700, marginBottom:14, textTransform:"uppercase" }}>Race Results</div>
             {[["P1","VER","1:31:48.192","🏆"],["P2","NOR","+1.8s","🥈"],["P3","LEC","+6.2s","🥉"],["FL","NOR","1:19.421","⏱️"]].map(([p,c,t,e])=>{
-              const d = DRIVERS.find(x=>x.code===c);
+              const d = LIVE.drivers.find(x=>x.code===c);
               return (
                 <div key={p} style={{ display:"flex", alignItems:"center", gap:10, paddingBottom:10, marginBottom:10, borderBottom:`1px solid ${T.border}` }}>
                   <span style={{ width:24, fontSize:11, color:T.muted, fontWeight:700 }}>{p}</span>
@@ -852,6 +1243,107 @@ function Dashboard() {
 /* ═══════════════════════════════════════════════════════════════════════════
    MAIN APP
 ═══════════════════════════════════════════════════════════════════════════ */
+function LearnHub({ onNavigate }) {
+  const modules = [
+    {
+      title: "F1 Basics",
+      subtitle: "3 lessons · 75 XP",
+      progress: "0/3",
+      accent: "#00e676",
+      icon: "🏁",
+      lessons: [
+        { title: "What is Formula 1?", meta: "info+quiz · +20 XP", cta: "Start →" },
+        { title: "Points System", meta: "match · +25 XP", locked: true },
+        { title: "Racing Flags", meta: "quiz · +30 XP", locked: true },
+      ],
+    },
+    {
+      title: "Race Strategy",
+      subtitle: "3 lessons · 120 XP",
+      progress: "0/3",
+      accent: "#00bcd4",
+      icon: "🔒",
+      lessons: [
+        { title: "The Undercut", meta: "info+quiz · +35 XP", locked: true },
+        { title: "Safety Car Strategy", meta: "quiz · +40 XP", locked: true },
+        { title: "Tyre Compounds", meta: "order · +45 XP", locked: true },
+      ],
+    },
+  ];
+
+  return (
+    <div style={{ maxWidth:1200, margin:"0 auto", padding:"40px 20px" }}>
+      <div style={{ marginBottom:22 }}>
+        <div style={{ fontSize:11, color:T.red, fontWeight:800, letterSpacing:3, textTransform:"uppercase", marginBottom:10 }}>Learning Hub</div>
+        <h1 style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:"clamp(44px,6vw,76px)", fontWeight:900, textTransform:"uppercase", color:T.text, lineHeight:0.95 }}>Understand F1</h1>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"260px 260px 1fr", gap:14, alignItems:"stretch", marginBottom:22 }}>
+        {[
+          { label:"Level 1", value:"0 XP total", icon:"⚡", color:"#ffc107" },
+          { label:"Streak", value:"0 lessons", icon:"🔥", color:"#ff6d00" },
+        ].map((c) => (
+          <div key={c.label} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:14, display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:38, height:38, borderRadius:12, background:`${c.color}1a`, border:`1px solid ${c.color}33`, display:"flex", alignItems:"center", justifyContent:"center" }}>{c.icon}</div>
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontSize:11, color:T.muted }}>{c.label}</div>
+              <div style={{ fontFamily:"'DM Mono',monospace", fontSize:16, fontWeight:700, color:T.text }}>{c.value}</div>
+            </div>
+          </div>
+        ))}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:14, display:"flex", flexDirection:"column", justifyContent:"center" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
+            <div style={{ fontSize:11, color:T.muted }}>Progress to Level 2</div>
+            <div style={{ fontSize:11, color:T.muted }}>100 XP to go</div>
+          </div>
+          <div style={{ height:8, background:T.surface, border:`1px solid ${T.border}`, borderRadius:999, overflow:"hidden" }}>
+            <div style={{ width:"0%", height:"100%", background:T.red }} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(360px,1fr))", gap:18 }}>
+        {modules.map((m) => (
+          <div key={m.title} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, overflow:"hidden" }}>
+            <div style={{ padding:18, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ width:44, height:44, borderRadius:14, background:`${m.accent}1a`, border:`1px solid ${m.accent}33`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>{m.icon}</div>
+                <div>
+                  <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:22, fontWeight:800, textTransform:"uppercase", color:T.text }}>{m.title}</div>
+                  <div style={{ fontSize:12, color:T.muted }}>{m.subtitle}</div>
+                </div>
+              </div>
+              <div style={{ fontFamily:"'DM Mono',monospace", fontSize:16, color:m.accent, fontWeight:800 }}>{m.progress}</div>
+            </div>
+            <div style={{ height:1, background:T.border }} />
+            <div style={{ padding:10 }}>
+              {m.lessons.map((l) => (
+                <div key={l.title} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 10px", borderRadius:12, background:T.surface, border:`1px solid ${T.border}`, marginBottom:10 }}>
+                  <div style={{ width:30, height:30, borderRadius:10, background:l.locked?`${T.red}1a`:`${m.accent}1a`, border:`1px solid ${l.locked?`${T.red}33`:`${m.accent}33`}`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>
+                    {l.locked ? "🔒" : "▶"}
+                  </div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontWeight:700, fontSize:13, color:T.text }}>{l.title}</div>
+                    <div style={{ fontSize:11, color:T.muted }}>{l.meta}</div>
+                  </div>
+                  {!l.locked && (
+                    <button onClick={() => onNavigate?.("ai")} style={{ background:"none", border:"none", color:T.muted, fontSize:12, cursor:"pointer" }}>
+                      {l.cta}
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button onClick={() => onNavigate?.("ai")} style={{ width:"100%", background:T.redDim, border:`1px solid ${T.red}44`, borderRadius:12, padding:"10px 12px", color:T.red, fontWeight:800, cursor:"pointer" }}>
+                Ask GridBot to explain a concept →
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const NAV_ITEMS = [
   {id:"home",label:"Home",icon:"🏠"},
   {id:"dashboard",label:"Dashboard",icon:"📊"},
@@ -862,9 +1354,30 @@ const NAV_ITEMS = [
 
 export default function ApexGrid() {
   const [page, setPage] = useState("home");
+  const [dataTick, setDataTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const overview = await fetchOverview();
+        if (cancelled) return;
+        LIVE.drivers = _mergeDriversWithSeed(overview?.driverStandings);
+        LIVE.constructors = _mergeConstructorsWithSeed(overview?.constructorStandings);
+        const nextRace = _deriveNextRaceFromOverview(overview);
+        if (nextRace?.startAt) LIVE.nextRace = nextRace;
+        setDataTick((t) => t + 1);
+      } catch {
+        // keep seed data
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
-    <div style={{ background:T.bg, minHeight:"100vh", color:T.text, fontFamily:"'Outfit','Segoe UI',sans-serif" }}>
+    <div key={dataTick} style={{ background:T.bg, minHeight:"100vh", color:T.text, fontFamily:"'Outfit','Segoe UI',sans-serif" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=DM+Mono:wght@400;500&family=Outfit:wght@400;500;600;700;800&display=swap');
         *{box-sizing:border-box;margin:0;padding:0;}
@@ -885,10 +1398,10 @@ export default function ApexGrid() {
             <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:20, letterSpacing:1, textTransform:"uppercase", color:T.text }}>APEX<span style={{ color:T.red }}>GRID</span></div>
           </button>
           <div style={{ display:"flex", flex:1 }}>
-            {NAV_ITEMS.map(n=>(
+            {PRIMARY_NAV.map(n=>(
               <button key={n.id} onClick={()=>setPage(n.id)}
                 style={{ background:"none", border:"none", color:page===n.id?T.text:T.muted, padding:"0 14px", height:60, cursor:"pointer", fontWeight:page===n.id?700:400, fontSize:14, borderBottom:`2px solid ${page===n.id?T.red:"transparent"}`, transition:"all 0.2s", display:"flex", alignItems:"center", gap:6 }}>
-                {page===n.id&&<span>{n.icon}</span>}{n.label}
+                {n.label}
               </button>
             ))}
           </div>
@@ -939,7 +1452,7 @@ export default function ApexGrid() {
                   <button onClick={()=>setPage("drivers")} style={{ background:"none", border:`1px solid ${T.border}`, color:T.muted, borderRadius:8, padding:"6px 14px", fontSize:12, cursor:"pointer" }}>View All →</button>
                 </div>
                 <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))", gap:10 }}>
-                  {DRIVERS.slice(0,6).map((d,i)=>(
+                  {LIVE.drivers.slice(0,6).map((d,i)=>(
                     <div key={d.code} onClick={()=>setPage("drivers")}
                       style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"12px 16px", display:"flex", alignItems:"center", gap:10, cursor:"pointer", transition:"all 0.2s", borderTop:`3px solid ${d.color}` }}
                       onMouseEnter={e=>{e.currentTarget.style.borderColor=d.color+"66";e.currentTarget.style.background=T.cardHover;}}
@@ -970,6 +1483,7 @@ export default function ApexGrid() {
           </>
         )}
         {page==="dashboard"&&<Dashboard/>}
+        {page==="learn"&&<LearnHub onNavigate={setPage}/>}
         {page==="ai"&&(
           <div style={{ maxWidth:900, margin:"0 auto", padding:"32px 20px" }}>
             <div style={{ marginBottom:24 }}>
@@ -998,7 +1512,7 @@ export default function ApexGrid() {
               <h2 style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:"clamp(32px,5vw,52px)", fontWeight:900, textTransform:"uppercase", color:T.text }}>Driver Profiles</h2>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))", gap:16 }}>
-              {DRIVERS.map((d,i)=>(
+              {LIVE.drivers.map((d,i)=>(
                 <div key={d.code} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:22, cursor:"pointer", transition:"all 0.3s", position:"relative", overflow:"hidden" }}
                   onMouseEnter={e=>{e.currentTarget.style.borderColor=d.color+"66";e.currentTarget.style.transform="translateY(-3px)";}}
                   onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.transform="none";}}>

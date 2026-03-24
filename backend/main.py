@@ -5,11 +5,12 @@ Serves F1 data from Ergast API + AI endpoints
 
 import os
 from datetime import date
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, timezone
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
-from typing import Optional
+from typing import Optional, Any
 from dotenv import load_dotenv
 
 from services import ergast_fetcher
@@ -166,6 +167,36 @@ async def ai_chat(req: ChatRequest):
         "status": "ok" if "not set" not in reply.lower() else "configure_api_key",
     }
 
+@app.get("/api/ai/predict/next")
+async def predict_next_race():
+    """
+    Predict next race winner + dark horse + key strategic factor using GridBot.
+    Uses live standings/schedule context from Ergast.
+    """
+    overview = await get_f1_overview(season="current")
+    ctx = format_overview_for_prompt(overview, top_n=10)
+    next_race = overview.get("nextRace") or {}
+    race_name = next_race.get("raceName") or "the next race"
+    circuit = (next_race.get("Circuit") or {}).get("circuitName") or ""
+    when = next_race.get("date") or ""
+
+    prompt = (
+        f"Predict the winner of {race_name}.\n"
+        f"Circuit: {circuit}\n"
+        f"Date: {when}\n\n"
+        "Return:\n"
+        "- Likely winner (1 sentence)\n"
+        "- Dark horse (1 sentence)\n"
+        "- Key strategic factor (1 sentence)\n"
+        "Under 90 words."
+    )
+
+    reply = await get_gridbot_response_async(
+        [{"role": "user", "content": prompt}],
+        extra_context=ctx,
+    )
+    return {"race": {"name": race_name, "circuit": circuit, "date": when}, "prediction": reply}
+
 
 @app.post("/api/ai/strategy")
 async def strategy_prediction(req: StrategyRequest):
@@ -232,3 +263,142 @@ async def race_summary(season: str, round: int):
         "narrative": f"{summary_data['winner']} claimed victory at the {summary_data['race']} ahead of a competitive field.",
         "status": "basic_summary"
     }
+
+
+# ── WebSocket Race Rooms (Discord-lite) ───────────────────────────────────
+
+class RoomMessage(BaseModel):
+    type: str = "message"  # "message"
+    text: str
+
+
+class _RoomState:
+    def __init__(self):
+        self.connections: dict[str, set[WebSocket]] = {}
+        self.history: dict[str, list[dict[str, Any]]] = {}
+        self.members: dict[str, dict[WebSocket, str]] = {}
+
+    def _ensure(self, room_id: str):
+        self.connections.setdefault(room_id, set())
+        self.history.setdefault(room_id, [])
+        self.members.setdefault(room_id, {})
+
+    def online_count(self, room_id: str) -> int:
+        return len(self.connections.get(room_id, set()))
+
+
+rooms = _RoomState()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def _broadcast(room_id: str, payload: dict[str, Any]):
+    for ws in list(rooms.connections.get(room_id, set())):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            # Drop broken connection
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            rooms.connections.get(room_id, set()).discard(ws)
+            rooms.members.get(room_id, {}).pop(ws, None)
+
+
+async def _send_system(room_id: str, text: str):
+    payload = {"type": "system", "text": text, "ts": _now_iso()}
+    rooms.history[room_id].append(payload)
+    rooms.history[room_id] = rooms.history[room_id][-100:]
+    await _broadcast(room_id, payload)
+
+
+@app.get("/api/rooms")
+async def list_rooms():
+    """
+    Lists chat rooms. Rooms are lightweight and can be created on-the-fly
+    by connecting to `/ws/rooms/{room_id}`.
+    """
+    try:
+        overview = await get_f1_overview(season="current")
+    except Exception:
+        overview = {}
+    next_race = overview.get("nextRace") or {}
+    last_race = overview.get("lastRace") or {}
+
+    def mk(room_id: str, name: str, topic: str) -> dict[str, Any]:
+        return {
+            "id": room_id,
+            "name": name,
+            "topic": topic,
+            "online": rooms.online_count(room_id),
+        }
+
+    out: list[dict[str, Any]] = [
+        mk("paddock", "Paddock", "General F1 chat"),
+    ]
+    if next_race:
+        out.append(
+            mk(
+                f"race-{next_race.get('round','next')}",
+                next_race.get("raceName", "Next Race"),
+                "Weekend predictions + strategy talk",
+            )
+        )
+    if last_race:
+        out.append(
+            mk(
+                f"race-{last_race.get('round','last')}-review",
+                f"{last_race.get('raceName','Last Race')} Review",
+                "Post-race analysis + hot takes",
+            )
+        )
+    return {"rooms": out}
+
+
+@app.get("/api/rooms/{room_id}/history")
+async def room_history(room_id: str):
+    rooms._ensure(room_id)
+    return {"roomId": room_id, "messages": rooms.history.get(room_id, [])[-100:]}
+
+
+@app.websocket("/ws/rooms/{room_id}")
+async def ws_room(room_id: str, websocket: WebSocket):
+    user = (websocket.query_params.get("user") or "Guest").strip()[:32]
+    await websocket.accept()
+    rooms._ensure(room_id)
+    rooms.connections[room_id].add(websocket)
+    rooms.members[room_id][websocket] = user
+
+    await websocket.send_json(
+        {
+            "type": "init",
+            "roomId": room_id,
+            "user": user,
+            "online": rooms.online_count(room_id),
+            "history": rooms.history.get(room_id, [])[-50:],
+        }
+    )
+    await _send_system(room_id, f"{user} joined")
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg = RoomMessage(**data)
+            text = (msg.text or "").strip()
+            if not text:
+                continue
+            payload = {"type": "message", "user": user, "text": text[:1000], "ts": _now_iso()}
+            rooms.history[room_id].append(payload)
+            rooms.history[room_id] = rooms.history[room_id][-100:]
+            await _broadcast(room_id, payload)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        rooms.connections.get(room_id, set()).discard(websocket)
+        rooms.members.get(room_id, {}).pop(websocket, None)
+        await _send_system(room_id, f"{user} left")
