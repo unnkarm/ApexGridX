@@ -1,11 +1,11 @@
 """
 race_explainer.py
 GridBot AI — race strategy explainer and assistant.
-Uses Anthropic API (or Ollama/Gemma locally).
+Uses Gemini API (or Ollama/Gemma locally).
 """
 
 import os
-from typing import Optional
+import asyncio
 
 # ── System prompt ─────────────────────────────────────────────────────────
 
@@ -19,20 +19,8 @@ Style rules:
 - Use 1–2 emojis maximum per response
 - Be specific: cite lap numbers, compound names, gap in seconds
 - Use plain English — define jargon when you use it
-- Reference real 2026 season data when asked about current standings
+- When asked about current standings/schedule/results, use the provided live context (if present). If it's missing, say you don't have the latest data.
 - End provocative strategy questions with a follow-up question
-
-2026 Season knowledge:
-- Races: AUS (VER wins), CHN (NOR wins), JPN (LEC wins)
-- Driver standings: VER 77, NOR 62, LEC 56, PIA 49, RUS 37, HAM 30
-- Constructor standings: McLaren 111, Red Bull 87, Ferrari 86, Mercedes 59
-- Hamilton moved to Ferrari for 2026 (formerly Mercedes since 2013)
-- Antonelli (19) promoted to Mercedes — impressive debut
-- McLaren leads constructors for first time since 2012
-- Tyre compounds: Soft (fastest, ~20 lap life), Medium (~32 laps), Hard (~45 laps)
-- DRS: opens within 1.0s of car ahead at detection point, +~15 km/h
-- Safety Car history: Bahrain avg lap 12-18, Melbourne avg lap 15-22
-- Bayesian tyre degradation model available for pit window predictions
 """
 
 CONCEPT_PROMPTS = {
@@ -47,35 +35,50 @@ CONCEPT_PROMPTS = {
 }
 
 
-# ── Anthropic integration ─────────────────────────────────────────────────
+# ── Gemini integration ───────────────────────────────────────────────────
 
-def get_gridbot_response(messages: list[dict], extra_context: str = "") -> str:
+async def get_gridbot_response_async(messages: list[dict], extra_context: str = "") -> str:
     """
-    Call Anthropic API to get GridBot response.
-    Set ANTHROPIC_API_KEY in environment.
+    Call Gemini API to get GridBot response.
+    Set GEMINI_API_KEY in environment.
     """
+    from .gemini_client import GeminiConfig, GeminiError, generate_text
+
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
         system = GRIDBOT_SYSTEM
         if extra_context:
-            system += f"\n\nAdditional race context:\n{extra_context}"
+            system += f"\n\nLive F1 context:\n{extra_context}"
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            system=system,
-            messages=messages
+        def _env_float(key: str, default: float) -> float:
+            try:
+                return float(os.environ.get(key, default))
+            except Exception:
+                return default
+
+        def _env_int(key: str, default: int) -> int:
+            try:
+                return int(os.environ.get(key, default))
+            except Exception:
+                return default
+
+        cfg = GeminiConfig(
+            api_key=os.environ["GEMINI_API_KEY"],
+            model=os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+            temperature=_env_float("GEMINI_TEMPERATURE", 0.4),
+            max_output_tokens=_env_int("GEMINI_MAX_OUTPUT_TOKENS", 512),
         )
-        return response.content[0].text
-
-    except ImportError:
-        return "Anthropic package not installed. Run: pip install anthropic"
+        return await generate_text(config=cfg, messages=messages, system=system)
     except KeyError:
-        return "ANTHROPIC_API_KEY not set in environment variables."
+        return "GEMINI_API_KEY not set in environment variables."
+    except GeminiError as e:
+        return f"GridBot Gemini error: {str(e)}"
     except Exception as e:
         return f"GridBot error: {str(e)}"
+
+
+def get_gridbot_response(messages: list[dict], extra_context: str = "") -> str:
+    """Synchronous wrapper for scripts/tests."""
+    return asyncio.run(get_gridbot_response_async(messages, extra_context=extra_context))
 
 
 def explain_concept(concept_key: str) -> str:

@@ -3,12 +3,20 @@ ApexGrid Backend — FastAPI
 Serves F1 data from Ergast API + AI endpoints
 """
 
+import os
+from datetime import date
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
-import asyncio
 from typing import Optional
+from dotenv import load_dotenv
+
+from services import ergast_fetcher
+from services.f1_context import get_f1_overview, format_overview_for_prompt
+from ai.race_explainer import get_gridbot_response_async
+
+load_dotenv()
 
 app = FastAPI(
     title="ApexGrid API",
@@ -16,9 +24,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
+cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://apexgrid.io"],
+    allow_origins=[o.strip() for o in cors_origins if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,38 +54,34 @@ def root():
 @app.get("/api/standings/drivers")
 async def driver_standings(season: str = "current"):
     """Get current driver championship standings from Ergast"""
-    data = await fetch_ergast(f"{season}/driverStandings")
-    standings = data["MRData"]["StandingsTable"]["StandingsLists"]
+    standings = await ergast_fetcher.get_driver_standings(season=season)
     if not standings:
         raise HTTPException(status_code=404, detail="No standings found")
-    return standings[0]["DriverStandings"]
+    return standings
 
 
 @app.get("/api/standings/constructors")
 async def constructor_standings(season: str = "current"):
     """Get constructor championship standings"""
-    data = await fetch_ergast(f"{season}/constructorStandings")
-    standings = data["MRData"]["StandingsTable"]["StandingsLists"]
+    standings = await ergast_fetcher.get_constructor_standings(season=season)
     if not standings:
         raise HTTPException(status_code=404, detail="No standings found")
-    return standings[0]["ConstructorStandings"]
+    return standings
 
 
 @app.get("/api/races")
 async def race_schedule(season: str = "current"):
     """Get full season race schedule"""
-    data = await fetch_ergast(f"{season}")
-    return data["MRData"]["RaceTable"]["Races"]
+    return await ergast_fetcher.get_race_schedule(season=season)
 
 
 @app.get("/api/races/{round}/results")
 async def race_results(round: int, season: str = "current"):
     """Get race results for a specific round"""
-    data = await fetch_ergast(f"{season}/{round}/results")
-    races = data["MRData"]["RaceTable"]["Races"]
-    if not races:
+    race = await ergast_fetcher.get_race_results(season=season, round_num=round)
+    if not race:
         raise HTTPException(status_code=404, detail="Race not found")
-    return races[0]
+    return race
 
 
 @app.get("/api/races/{round}/laps")
@@ -88,11 +94,7 @@ async def race_laps(round: int, season: str = "current"):
 @app.get("/api/races/{round}/pitstops")
 async def pit_stops(round: int, season: str = "current"):
     """Get pit stop data for a race"""
-    data = await fetch_ergast(f"{season}/{round}/pitstops")
-    races = data["MRData"]["RaceTable"]["Races"]
-    if not races:
-        return []
-    return races[0].get("PitStops", [])
+    return await ergast_fetcher.get_pit_stops(season=season, round_num=round)
 
 
 @app.get("/api/drivers/{driver_id}/seasons")
@@ -108,6 +110,12 @@ async def driver_results(driver_id: str, limit: int = 10):
     data = await fetch_ergast(f"drivers/{driver_id}/results?limit={limit}")
     races = data["MRData"]["RaceTable"]["Races"]
     return races
+
+
+@app.get("/api/f1/overview")
+async def f1_overview(season: str = "current"):
+    """A single-call overview: standings + races + next/last race."""
+    return await get_f1_overview(season=season)
 
 
 # ── AI endpoints ──────────────────────────────────────────────────────────
@@ -132,23 +140,30 @@ class StrategyRequest(BaseModel):
 async def ai_chat(req: ChatRequest):
     """
     GridBot AI chat endpoint.
-    In production: connect to Anthropic API or Ollama/Gemma locally.
+    Gemini-powered, augmented with live F1 standings/schedule from Ergast.
     """
-    # Example: integrate with Anthropic API
-    # import anthropic
-    # client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    # response = client.messages.create(
-    #     model="claude-sonnet-4-20250514",
-    #     max_tokens=500,
-    #     system=GRIDBOT_SYSTEM_PROMPT,
-    #     messages=[{"role": m.role, "content": m.content} for m in req.messages]
-    # )
-    # return {"reply": response.content[0].text}
+    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+
+    extra_context_parts: list[str] = []
+    if req.race_context:
+        extra_context_parts.append(req.race_context)
+
+    try:
+        overview = await get_f1_overview(season="current")
+        extra_context_parts.append(format_overview_for_prompt(overview, top_n=10))
+    except Exception:
+        # Don't fail the chat endpoint if the data source is down.
+        pass
+
+    reply = await get_gridbot_response_async(
+        messages,
+        extra_context="\n\n".join(p for p in extra_context_parts if p.strip()),
+    )
 
     return {
-        "reply": "GridBot backend endpoint ready. Connect Anthropic API key to enable.",
-        "model": "claude-sonnet-4-20250514",
-        "status": "configure_api_key"
+        "reply": reply,
+        "model": os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"),
+        "status": "ok" if "not set" not in reply.lower() else "configure_api_key",
     }
 
 

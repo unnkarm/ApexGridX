@@ -5,7 +5,7 @@
 ![ApexGrid](https://img.shields.io/badge/F1-2026_Season-e10600?style=for-the-badge)
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110-009688?style=for-the-badge)
-![AI](https://img.shields.io/badge/AI-Claude_Sonnet-orange?style=for-the-badge)
+![AI](https://img.shields.io/badge/AI-Gemini-orange?style=for-the-badge)
 
 ---
 
@@ -18,7 +18,7 @@ ApexGrid is a startup-grade F1 analytics and community platform combining:
 | 🗺️ **Race Replay** | Animated SVG track map, DRS zones, live car positions |
 | 📊 **Tyre Strategy** | Bayesian degradation model for compound analysis |
 | ⏱️ **Telemetry** | Speed traces, gear, DRS, brake data per driver |
-| 🤖 **GridBot AI** | Claude-powered race strategy assistant |
+| 🤖 **GridBot AI** | Gemini-powered race strategy assistant |
 | 👥 **Community** | Posts, team rooms, reactions, prediction league |
 | 📋 **Race Timeline** | Lap-by-lap event visualization with hover details |
 
@@ -71,7 +71,7 @@ cd backend
 pip install -r requirements.txt
 
 # Set environment variables
-export ANTHROPIC_API_KEY=sk-ant-...
+export GEMINI_API_KEY=...
 export DATABASE_URL=postgresql://user:pass@localhost/apexgrid
 
 uvicorn main:app --reload --port 8000
@@ -136,7 +136,7 @@ From `WeatherComponent` in original source:
 
 ## 🤖 GridBot AI
 
-GridBot is powered by **Claude Sonnet** via Anthropic API.
+GridBot is powered by **Gemini** (Google Generative Language API), augmented with live standings/schedule from the F1 data backend.
 
 **Capabilities:**
 - Race strategy analysis ("Why did Ferrari lose Bahrain?")
@@ -176,16 +176,16 @@ GridBot is powered by **Claude Sonnet** via Anthropic API.
 | [Ergast API](https://ergast.com/mrd/) | Driver standings, race results, lap times, pit stops |
 | [FastF1](https://github.com/theOehrly/Fast-F1) | Telemetry, sector times, tyre data (Python) |
 | Bayesian Model | Tyre degradation prediction, pit window estimation |
-| Anthropic API | GridBot AI responses |
+| Gemini API | GridBot AI responses |
 
 ---
 
 ## 🧠 Tech Stack
 
 **Frontend:** React 18 · Recharts · Barlow Condensed + DM Mono fonts  
-**Backend:** Python 3.11 · FastAPI · httpx · Anthropic SDK  
+**Backend:** Python 3.11 · FastAPI · httpx  
 **Database:** PostgreSQL  
-**AI:** Claude Sonnet (cloud) or Ollama/Gemma (local)  
+**AI:** Gemini (cloud) or Ollama/Gemma (local)  
 **Data:** Ergast API · FastF1 library  
 
 ---
@@ -194,7 +194,7 @@ GridBot is powered by **Claude Sonnet** via Anthropic API.
 
 ```env
 # backend/.env
-ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
 DATABASE_URL=postgresql://localhost/apexgrid
 ERGAST_CACHE_TTL_HOURS=1
 CORS_ORIGINS=http://localhost:3000
@@ -219,7 +219,7 @@ CORS_ORIGINS=http://localhost:3000
 
 Race replay engine concepts adapted from [f1-race-replay](https://github.com/IAmTomShaw/f1-race-replay) by Tom Shaw (MIT License).  
 F1 data from [Ergast Motor Racing API](https://ergast.com/mrd/).  
-AI powered by [Anthropic Claude](https://anthropic.com).
+AI powered by Gemini (Google Generative Language API).
 
 ---
 
