@@ -1,12 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { T } from "./constants/theme";
-import { DRIVERS } from "./constants/data";
+import { DRIVERS, CONSTRUCTORS, NEXT_RACE } from "./constants/data";
 import Hero from "./components/Hero";
 import CommunitySection from "./components/CommunitySection";
 import Dashboard from "./components/Dashboard";
 import AIChat from "./components/AIChat";
 
-const NAV_ITEMS = [
+let LIVE = {
+  drivers: [...DRIVERS],
+  constructors: [...CONSTRUCTORS],
+  nextRace: { ...NEXT_RACE }
+};
+
+const PRIMARY_NAV = [
   {id:"home",label:"Home",icon:"🏠"},
   {id:"dashboard",label:"Dashboard",icon:"📊"},
   {id:"community",label:"Community",icon:"👥"},
@@ -145,7 +151,6 @@ export default function ApexGrid() {
           </>
         )}
         {page==="dashboard"&&<Dashboard/>}
-        {page==="learn"&&<LearnHub onNavigate={setPage}/>}
         {page==="ai"&&(
           <div style={{ maxWidth:900, margin:"0 auto", padding:"32px 20px" }}>
             <div style={{ marginBottom:24 }}>
